@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Control de Recibo - Parras Valley</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#0a1a0e;color:#e8e4d8;font-family:system-ui,sans-serif;}
+    input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
+    select option{background:#0a1a0e;}
+    ::-webkit-scrollbar{width:5px;}
+    ::-webkit-scrollbar-thumb{background:rgba(34,197,94,0.3);border-radius:4px;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+var useState=React.useState;
+var useEffect=React.useEffect;
+
+var PIN="1986";
+var FB="https://parrasvalley-default-rtdb.firebaseio.com";
+var INV_KEY="recibo-inv-v1";
+var HIST_KEY="recibo-hist-v1";
+var ACUM_KEY="rf-acum-v1";
+var HORAS_MAX=4;
+
+var LINEAS=[
+  {id:"persa",   nombre:"Persa",   color:"#4ade80", bg:"rgba(74,222,128,0.08)"},
+  {id:"slicer",  nombre:"Slicer",  color:"#38bdf8", bg:"rgba(56,189,248,0.08)"},
+  {id:"europeo", nombre:"Europeo", color:"#c084fc", bg:"rgba(192,132,252,0.08)"},
+  {id:"morron",  nombre:"Morron",  color:"#f59e0b", bg:"rgba(245,158,11,0.08)"},
+  {id:"minibel", nombre:"Minibel", color:"#f43f5e", bg:"rgba(244,63,94,0.08)"},
+];
+var RANCHOS=["PVT","CRP","Forrajera","Fepo"];
+
+async function fbGet(k){try{var r=await fetch(FB+"/"+k+".json");return r.ok?await r.json():null;}catch(e){try{var v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e2){return null;}}}
+async function fbSet(k,v){try{await fetch(FB+"/"+k+".json",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(v)});}catch(e){}try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+
+function initInv(){
+  var o={};
+  LINEAS.forEach(function(l){o[l.id]={lotes:[]};});
+  return o;
+}
+function horasDesde(ts){return (Date.now()-ts)/3600000;}
+function f1(v){return isNaN(v)||!isFinite(v)?"0.0":Number(v).toFixed(1);}
+function ni(v){var x=parseInt(v);return isNaN(x)?0:x;}
+function ahora(){
+  var d=new Date();
+  return d.getHours().toString().padStart(2,"0")+":"+d.getMinutes().toString().padStart(2,"0");
+}
+function fechaHoy(){return new Date().toLocaleDateString("es-MX",{weekday:"short",day:"2-digit",month:"short",year:"numeric"});}
+
+function ModalPin(props){
+  var s1=useState(""); var v=s1[0]; var sv=s1[1];
+  var s2=useState(false); var err=s2[0]; var sErr=s2[1];
+  function ok(){if(v===PIN){sv("");sErr(false);props.onOk();}else{sErr(true);sv("");}}
+  return (
+    <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.88)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"#0a1a0a",border:"2px solid rgba(34,197,94,0.3)",borderRadius:16,padding:32,maxWidth:300,width:"100%",textAlign:"center"}}>
+        <div style={{fontSize:18,fontWeight:900,color:"#f0f0e8",marginBottom:6}}>Acceso requerido</div>
+        <div style={{fontSize:13,color:"#4a7a54",marginBottom:20}}>Ingresa el PIN</div>
+        <input type="number" value={v} onChange={function(e){sv(e.target.value.slice(0,8));sErr(false);}} placeholder="PIN"
+          style={{width:"100%",background:"rgba(0,0,0,0.4)",border:"2px solid "+(err?"#f87171":"rgba(34,197,94,0.3)"),borderRadius:10,padding:"12px",color:"#4ade80",fontFamily:"Georgia,serif",fontSize:26,textAlign:"center",outline:"none",marginBottom:err?8:16,letterSpacing:6}}/>
+        {err&&<div style={{fontSize:13,fontWeight:800,color:"#f87171",marginBottom:12}}>PIN incorrecto</div>}
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={props.onCancel} style={{flex:1,padding:"11px",background:"rgba(255,255,255,0.05)",border:"2px solid rgba(255,255,255,0.1)",borderRadius:9,color:"#6b7280",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"system-ui"}}>Cancelar</button>
+          <button onClick={ok} style={{flex:1,padding:"11px",background:"linear-gradient(135deg,#16a34a,#22c55e)",border:"none",borderRadius:9,color:"#052e16",fontSize:14,fontWeight:900,cursor:"pointer",fontFamily:"system-ui"}}>Entrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  var s1=useState("vivo"); var tab=s1[0]; var setTab=s1[1];
+  var s2=useState(initInv); var inv=s2[0]; var setInv=s2[1];
+  var s3=useState([]); var hist=s3[0]; var setHist=s3[1];
+  var s4=useState({}); var acum=s4[0]; var setAcum=s4[1];
+  var s5=useState(null); var lineaSel=s5[0]; var setLineaSel=s5[1];
+  var s6=useState(false); var auth=s6[0]; var setAuth=s6[1];
+  var s7=useState(false); var showPin=s7[0]; var setShowPin=s7[1];
+  var s8=useState(null); var pinCb=s8[0]; var setPinCb=s8[1];
+  var s9=useState(null); var formLote=s9[0]; var setFormLote=s9[1];
+  var s10=useState(null); var confirmCerrar=s10[0]; var setConfirmCerrar=s10[1];
+  var s11=useState(false); var mob=s11[0]; var setMob=s11[1];
+  var s12=useState(""); var fHistLinea=s12[0]; var setFHistLinea=s12[1];
+  var s13=useState(""); var fAcumRancho=s13[0]; var setFAcumRancho=s13[1];
+  var s14=useState(""); var fAcumLinea=s14[0]; var setFAcumLinea=s14[1];
+  var s15=useState(""); var fAcumMalla=s15[0]; var setFAcumMalla=s15[1];
+  var s16=useState(null); var openHist=s16[0]; var setOpenHist=s16[1];
+
+  useEffect(function(){
+    function resize(){setMob(window.innerWidth<768);}
+    resize();
+    window.addEventListener("resize",resize);
+    return function(){window.removeEventListener("resize",resize);};
+  },[]);
+
+  useEffect(function(){
+    function load(){
+      fbGet(INV_KEY).then(function(d){if(d&&typeof d==="object")setInv(Object.assign(initInv(),d));});
+      fbGet(HIST_KEY).then(function(d){if(d&&Array.isArray(d))setHist(d);});
+      // Cargar historial de version anterior si existe
+      fbGet("recibo-hist-v1").then(function(d){
+        if(d&&Array.isArray(d)&&d.length>0){
+          setHist(function(prev){
+            if(prev.length>0)return prev;
+            return d;
+          });
+        }
+      });
+      fbGet(ACUM_KEY).then(function(d){if(d&&typeof d==="object"&&!Array.isArray(d))setAcum(d);});
+    }
+    load();
+    var t=setInterval(load,30000);
+    return function(){clearInterval(t);};
+  },[]);
+
+  async function guardar(nuevoInv){setInv(nuevoInv);await fbSet(INV_KEY,nuevoInv);}
+
+  function pinReq(cb){
+    if(auth){cb();return;}
+    setPinCb(function(){return cb;});
+    setShowPin(true);
+  }
+  function pinOk(){
+    setAuth(true);setShowPin(false);
+    if(pinCb){pinCb();setPinCb(null);}
+  }
+
+  function initFormLote(lineaId){
+    return{lineaId:lineaId,rancho:"PVT",malla:"",cajas:"",organico:false,chofer:"",notas:""};
+  }
+
+  async function agregarLote(){
+    if(!formLote||!formLote.malla||!formLote.cajas)return;
+    var nuevoInv=Object.assign({},inv);
+    var linea=nuevoInv[formLote.lineaId]||{lotes:[]};
+    var lotes=linea.lotes.concat([{
+      id:Date.now(),rancho:formLote.rancho,malla:formLote.malla,
+      cajas:ni(formLote.cajas),organico:formLote.organico,
+      chofer:formLote.chofer,notas:formLote.notas,
+      ts:Date.now(),hora:ahora(),
+      enProceso:false,procesado:false
+    }]);
+    nuevoInv[formLote.lineaId]=Object.assign({},linea,{lotes:lotes});
+    await guardar(nuevoInv);
+    setFormLote(null);
+  }
+
+  async function enviarProceso(lineaId,loteId){
+    var nuevoInv=Object.assign({},inv);
+    var linea=nuevoInv[lineaId]||{lotes:[]};
+    linea.lotes=linea.lotes.map(function(l){
+      if(l.id===loteId)return Object.assign({},l,{enProceso:true,tsEnvio:Date.now(),horaEnvio:ahora()});
+      return l;
+    });
+    nuevoInv[lineaId]=linea;
+    await guardar(nuevoInv);
+  }
+
+  async function terminarProceso(lineaId,loteId){
+    var nuevoInv=Object.assign({},inv);
+    var linea=nuevoInv[lineaId]||{lotes:[]};
+    linea.lotes=linea.lotes.map(function(l){
+      if(l.id===loteId)return Object.assign({},l,{procesado:true,tsTermino:Date.now(),horaTermino:ahora()});
+      return l;
+    });
+    nuevoInv[lineaId]=linea;
+    await guardar(nuevoInv);
+  }
+
+  async function cerrarDia(lineaId){
+    var lin=LINEAS.find(function(l){return l.id===lineaId;});
+    var linea=inv[lineaId]||{lotes:[]};
+    if(!linea.lotes.length)return;
+
+    var totalRejas=linea.lotes.reduce(function(s,l){return s+(l.cajas||0);},0);
+    var snap={
+      id:Date.now(),fecha:fechaHoy(),horaCierre:ahora(),
+      lineaId:lineaId,lineaNombre:lin.nombre,lineaColor:lin.color,
+      totalLotes:linea.lotes.length,totalRejas:totalRejas,
+      lotes:linea.lotes.slice()
+    };
+
+    // Historial de dias
+    var nuevoHist=[snap].concat(hist).slice(0,250);
+    setHist(nuevoHist);
+    await fbSet(HIST_KEY,nuevoHist);
+
+    // Acumulado por malla
+    var nuevoAcum=Object.assign({},acum);
+    var fechaCorte=new Date().toLocaleDateString("es-MX");
+    linea.lotes.forEach(function(l){
+      if(!l.rancho||!l.malla)return;
+      var key=l.rancho+"|"+lin.nombre+"|"+l.malla;
+      var prev=nuevoAcum[key]||{rancho:l.rancho,linea:lin.nombre,malla:l.malla,totalRejas:0,totalViajes:0,primerCorte:"",ultimoCorte:""};
+      prev.totalRejas+=(l.cajas||0);
+      prev.totalViajes+=1;
+      if(!prev.primerCorte)prev.primerCorte=fechaCorte;
+      prev.ultimoCorte=fechaCorte;
+      nuevoAcum[key]=prev;
+    });
+    setAcum(nuevoAcum);
+    await fbSet(ACUM_KEY,nuevoAcum);
+
+    // Limpiar linea
+    var nuevoInv=Object.assign({},inv);
+    nuevoInv[lineaId]={lotes:[]};
+    await guardar(nuevoInv);
+    setConfirmCerrar(null);
+    setLineaSel(null);
+  }
+
+  var INP={width:"100%",background:"rgba(0,0,0,0.4)",border:"2px solid rgba(255,255,255,0.12)",borderRadius:8,padding:"10px 12px",color:"#e8e4d8",fontFamily:"system-ui",fontSize:15,fontWeight:700,outline:"none"};
+  var LBL={fontSize:10,color:"#4ade80",fontWeight:800,textTransform:"uppercase",letterSpacing:1.5,marginBottom:5,display:"block"};
+
+  // Totales generales
+  var totalRejasHoy=Object.values(inv).reduce(function(s,l){return s+(l.lotes||[]).reduce(function(s2,lt){return s2+(lt.cajas||0);},0);},0);
+  var totalLotesHoy=Object.values(inv).reduce(function(s,l){return s+(l.lotes||[]).length;},0);
+
+  return (
+    <div style={{background:"#0a1a0e",minHeight:"100vh"}}>
+      {/* HEADER */}
+      <div style={{background:"rgba(0,0,0,0.8)",borderBottom:"2px solid rgba(34,197,94,0.2)",padding:mob?"0 12px":"0 36px",display:"flex",alignItems:"center",height:mob?54:62,position:"sticky",top:0,zIndex:50}}>
+        <div style={{fontSize:mob?14:20,fontWeight:900,color:"#4ade80",letterSpacing:2,marginRight:mob?8:36}}>RECIBO</div>
+        <div style={{display:"flex",flex:1}}>
+          {[["vivo","EN VIVO"],["hist","HISTORIAL"],["acum","ACUMULADO"]].map(function(item){
+            var ac=tab===item[0];
+            return (
+              <button key={item[0]} onClick={function(){setTab(item[0]);}}
+                style={{padding:mob?"0 10px":"0 20px",height:mob?54:62,border:"none",borderBottom:ac?"3px solid #4ade80":"3px solid transparent",background:"transparent",fontSize:mob?12:14,fontWeight:900,cursor:"pointer",color:ac?"#4ade80":"#4a7a54",fontFamily:"system-ui"}}>
+                {item[1]}
+                {item[0]==="vivo"&&totalLotesHoy>0&&<span style={{marginLeft:4,background:"#4ade80",borderRadius:20,padding:"1px 7px",fontSize:11,color:"#052e16",fontWeight:900}}>{totalLotesHoy}</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          {totalRejasHoy>0&&!mob&&(
+            <div style={{background:"rgba(34,197,94,0.1)",border:"1px solid rgba(34,197,94,0.3)",borderRadius:8,padding:"5px 14px",textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:900,color:"#4ade80",lineHeight:1}}>{totalRejasHoy}</div>
+              <div style={{fontSize:9,fontWeight:800,color:"#4ade80"}}>REJAS HOY</div>
+            </div>
+          )}
+          <button onClick={function(){if(!auth){setShowPin(true);setPinCb(null);}else{setAuth(false);}}}
+            style={{padding:mob?"7px 10px":"8px 16px",borderRadius:22,background:auth?"rgba(34,197,94,0.18)":"rgba(255,255,255,0.06)",color:auth?"#4ade80":"#6b7280",fontWeight:800,fontSize:mob?11:13,cursor:"pointer",border:"2px solid "+(auth?"rgba(34,197,94,0.35)":"rgba(255,255,255,0.12)"),fontFamily:"system-ui"}}>
+            {auth?"EDITOR":"LECTOR"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{maxWidth:1400,margin:"0 auto",padding:mob?"14px 12px 80px":"24px 36px 80px"}}>
+
+      {/* ===== EN VIVO ===== */}
+      {tab==="vivo"&&!lineaSel&&(
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:mob?"1fr 1fr":"repeat(5,1fr)",gap:14,marginBottom:24}}>
+            {LINEAS.map(function(lin){
+              var linea=inv[lin.id]||{lotes:[]};
+              var lotes=linea.lotes||[];
+              var totalRejas=lotes.reduce(function(s,l){return s+(l.cajas||0);},0);
+              var enEspera=lotes.filter(function(l){return !l.enProceso&&!l.procesado;}).length;
+              var enProc=lotes.filter(function(l){return l.enProceso&&!l.procesado;}).length;
+              var terminado=lotes.filter(function(l){return l.procesado;}).length;
+              var conAlerta=lotes.filter(function(l){return !l.procesado&&horasDesde(l.ts)>HORAS_MAX;}).length;
+              return (
+                <div key={lin.id} onClick={function(){setLineaSel(lin.id);}}
+                  style={{background:lin.bg,border:"2px solid "+(conAlerta>0?"rgba(248,113,113,0.5)":lin.color+"44"),borderRadius:14,padding:"18px 16px",cursor:"pointer",transition:"all 0.2s"}}>
+                  <div style={{fontSize:mob?16:18,fontWeight:900,color:lin.color,marginBottom:12}}>{lin.nombre}</div>
+                  <div style={{fontSize:mob?28:36,fontWeight:900,color:"#f0f0e8",fontFamily:"Georgia,serif",lineHeight:1,marginBottom:4}}>{totalRejas}</div>
+                  <div style={{fontSize:12,fontWeight:700,color:"#4a7a54",marginBottom:12}}>rejas hoy</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
+                    <div style={{background:"rgba(0,0,0,0.3)",borderRadius:7,padding:"6px 4px",textAlign:"center"}}>
+                      <div style={{fontSize:9,color:"#6b7280",fontWeight:700}}>ESPERA</div>
+                      <div style={{fontSize:18,fontWeight:900,color:"#fbbf24"}}>{enEspera}</div>
+                    </div>
+                    <div style={{background:"rgba(0,0,0,0.3)",borderRadius:7,padding:"6px 4px",textAlign:"center"}}>
+                      <div style={{fontSize:9,color:"#6b7280",fontWeight:700}}>PROCESO</div>
+                      <div style={{fontSize:18,fontWeight:900,color:"#38bdf8"}}>{enProc}</div>
+                    </div>
+                    <div style={{background:"rgba(0,0,0,0.3)",borderRadius:7,padding:"6px 4px",textAlign:"center"}}>
+                      <div style={{fontSize:9,color:"#6b7280",fontWeight:700}}>LISTO</div>
+                      <div style={{fontSize:18,fontWeight:900,color:"#4ade80"}}>{terminado}</div>
+                    </div>
+                  </div>
+                  {conAlerta>0&&<div style={{marginTop:10,background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.3)",borderRadius:7,padding:"5px 10px",color:"#f87171",fontSize:12,fontWeight:800,textAlign:"center"}}>{conAlerta} con alerta de tiempo</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ===== DETALLE DE LINEA ===== */}
+      {tab==="vivo"&&lineaSel&&(function(){
+        var lin=LINEAS.find(function(l){return l.id===lineaSel;});
+        var linea=inv[lineaSel]||{lotes:[]};
+        var lotes=linea.lotes||[];
+        return (
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:20}}>
+              <button onClick={function(){setLineaSel(null);setFormLote(null);}}
+                style={{padding:"8px 18px",background:"rgba(255,255,255,0.06)",border:"2px solid rgba(255,255,255,0.12)",borderRadius:9,color:"#6b7280",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"system-ui"}}>
+                Volver
+              </button>
+              <div style={{fontSize:20,fontWeight:900,color:lin.color}}>{lin.nombre}</div>
+              <div style={{marginLeft:"auto",display:"flex",gap:10}}>
+                <button onClick={function(){pinReq(function(){setFormLote(initFormLote(lineaSel));});}}
+                  style={{padding:"9px 20px",background:lin.color+"22",border:"2px solid "+lin.color+"55",borderRadius:9,color:lin.color,fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"system-ui"}}>
+                  + Registrar lote
+                </button>
+                {lotes.length>0&&(
+                  <button onClick={function(){setConfirmCerrar(lineaSel);}}
+                    style={{padding:"9px 20px",background:"rgba(248,113,113,0.1)",border:"2px solid rgba(248,113,113,0.3)",borderRadius:9,color:"#f87171",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"system-ui"}}>
+                    Cerrar dia
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Form nuevo lote */}
+            {formLote&&formLote.lineaId===lineaSel&&(
+              <div style={{background:"rgba(255,255,255,0.04)",border:"2px solid "+lin.color+"44",borderRadius:14,padding:"20px",marginBottom:20}}>
+                <div style={{fontSize:14,fontWeight:900,color:lin.color,marginBottom:16}}>Nuevo lote de {lin.nombre}</div>
+                <div style={{display:"grid",gridTemplateColumns:mob?"1fr 1fr":"repeat(4,1fr)",gap:12,marginBottom:14}}>
+                  <div>
+                    <label style={LBL}>Rancho</label>
+                    <select style={INP} value={formLote.rancho} onChange={function(e){setFormLote(Object.assign({},formLote,{rancho:e.target.value}));}}>
+                      {RANCHOS.map(function(r){return <option key={r}>{r}</option>;})}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={LBL}>Malla</label>
+                    <input style={INP} placeholder="Ej: 5" value={formLote.malla} onChange={function(e){setFormLote(Object.assign({},formLote,{malla:e.target.value}));}}/>
+                  </div>
+                  <div>
+                    <label style={LBL}>Rejas *</label>
+                    <input style={Object.assign({},INP,{fontSize:20,color:lin.color})} type="number" min="0" placeholder="0" value={formLote.cajas} onChange={function(e){setFormLote(Object.assign({},formLote,{cajas:e.target.value}));}}/>
+                  </div>
+                  <div>
+                    <label style={LBL}>Chofer</label>
+                    <input style={INP} placeholder="Nombre" value={formLote.chofer} onChange={function(e){setFormLote(Object.assign({},formLote,{chofer:e.target.value}));}}/>
+                  </div>
+                </div>
+                <div style={{marginBottom:14}}>
+                  <label style={LBL}>Notas</label>
+                  <input style={INP} placeholder="Observaciones..." value={formLote.notas} onChange={function(e){setFormLote(Object.assign({},formLote,{notas:e.target.value}));}}/>
+                </div>
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={function(){setFormLote(null);}}
+                    style={{padding:"12px 20px",background:"rgba(255,255,255,0.05)",border:"2px solid rgba(255,255,255,0.1)",borderRadius:9,color:"#6b7280",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"system-ui"}}>
+                    Cancelar
+                  </button>
+                  <button onClick={function(){pinReq(agregarLote);}}
+                    disabled={!formLote.malla||!formLote.cajas}
+                    style={{flex:1,padding:"12px",background:formLote.malla&&formLote.cajas?"linear-gradient(135deg,#16a34a,#22c55e)":"rgba(255,255,255,0.04)",border:"none",borderRadius:9,color:formLote.malla&&formLote.cajas?"#052e16":"#374151",fontSize:15,fontWeight:900,cursor:formLote.malla&&formLote.cajas?"pointer":"default",fontFamily:"system-ui"}}>
+                    Guardar lote
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Lista de lotes */}
+            {!lotes.length
+              ? <div style={{textAlign:"center",padding:60,color:"#374151",fontSize:16,fontWeight:700}}>Sin lotes registrados hoy</div>
+              : lotes.map(function(lote){
+                var horas=horasDesde(lote.ts);
+                var alerta=horas>HORAS_MAX&&!lote.procesado;
+                var estadoColor=lote.procesado?"#4ade80":lote.enProceso?"#38bdf8":alerta?"#f87171":"#fbbf24";
+                var estadoTxt=lote.procesado?"LISTO":lote.enProceso?"EN PROCESO":alerta?"ALERTA":"EN ESPERA";
+                return (
+                  <div key={lote.id} style={{background:"rgba(255,255,255,0.04)",border:"2px solid "+(alerta?"rgba(248,113,113,0.3)":"rgba(255,255,255,0.08)"),borderRadius:12,padding:"16px 20px",marginBottom:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
+                      <div>
+                        <div style={{fontSize:16,fontWeight:900,color:lin.color}}>{lote.rancho} - Malla {lote.malla}</div>
+                        <div style={{fontSize:12,fontWeight:700,color:"#4a7a54",marginTop:2}}>Llegada: {lote.hora}{lote.chofer?" . "+lote.chofer:""}</div>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:12}}>
+                        <div style={{textAlign:"center"}}>
+                          <div style={{fontSize:32,fontWeight:900,color:"#f0f0e8",fontFamily:"Georgia,serif",lineHeight:1}}>{lote.cajas}</div>
+                          <div style={{fontSize:10,fontWeight:700,color:"#4a7a54"}}>rejas</div>
+                        </div>
+                        <div style={{background:"rgba(0,0,0,0.3)",border:"1px solid "+estadoColor+"44",borderRadius:8,padding:"8px 14px",textAlign:"center"}}>
+                          <div style={{fontSize:13,fontWeight:900,color:estadoColor}}>{estadoTxt}</div>
+                          {!lote.procesado&&<div style={{fontSize:11,color:"#4a5568",marginTop:2}}>{f1(horas)}h</div>}
+                        </div>
+                      </div>
+                    </div>
+                    {lote.notas&&<div style={{fontSize:12,color:"#4a5568",marginBottom:10}}>Nota: {lote.notas}</div>}
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      {!lote.enProceso&&!lote.procesado&&(
+                        <button onClick={function(){pinReq(function(){enviarProceso(lineaSel,lote.id);});}}
+                          style={{padding:"8px 18px",background:lin.color+"18",border:"2px solid "+lin.color+"44",borderRadius:8,color:lin.color,fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"system-ui"}}>
+                          Enviar a proceso
+                        </button>
+                      )}
+                      {lote.enProceso&&!lote.procesado&&(
+                        <button onClick={function(){pinReq(function(){terminarProceso(lineaSel,lote.id);});}}
+                          style={{padding:"8px 18px",background:"rgba(34,197,94,0.12)",border:"2px solid rgba(34,197,94,0.3)",borderRadius:8,color:"#4ade80",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"system-ui"}}>
+                          Marcar terminado
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            }
+          </div>
+        );
+      })()}
+
+      {/* ===== HISTORIAL ===== */}
+      {tab==="hist"&&(
+        <div>
+          <div style={{background:"rgba(255,255,255,0.03)",border:"2px solid rgba(255,255,255,0.07)",borderRadius:11,padding:"13px 18px",marginBottom:16,display:"flex",gap:12,alignItems:"end",flexWrap:"wrap"}}>
+            <div style={{fontSize:12,fontWeight:900,color:"#4ade80",alignSelf:"center"}}>FILTRAR:</div>
+            <div style={{flex:1,minWidth:150}}>
+              <label style={LBL}>Linea</label>
+              <select style={INP} value={fHistLinea} onChange={function(e){setFHistLinea(e.target.value);}}>
+                <option value="">Todas</option>
+                {LINEAS.map(function(l){return <option key={l.id} value={l.id}>{l.nombre}</option>;})}
+              </select>
+            </div>
+            <button onClick={function(){setFHistLinea("");}} style={{padding:"9px 16px",background:"rgba(255,255,255,0.06)",border:"2px solid rgba(255,255,255,0.1)",borderRadius:9,color:"#6b7280",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"system-ui",alignSelf:"end"}}>Limpiar</button>
+          </div>
+
+          {!hist.length
+            ? <div style={{textAlign:"center",padding:80,color:"#374151",fontSize:18,fontWeight:700}}>El historial aparece al cerrar el dia</div>
+            : hist.filter(function(h){return !fHistLinea||h.lineaId===fHistLinea;}).map(function(h,i){
+              var lin2=LINEAS.find(function(l){return l.id===h.lineaId;})||{color:"#4ade80",nombre:h.lineaNombre};
+              var isOpen=openHist===i;
+              return (
+                <div key={i} style={{background:"rgba(255,255,255,0.04)",border:"2px solid rgba(255,255,255,0.08)",borderRadius:12,marginBottom:10,overflow:"hidden"}}>
+                  <div onClick={function(){setOpenHist(isOpen?null:i);}} style={{display:"flex",alignItems:"center",gap:14,padding:"16px 22px",cursor:"pointer"}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:16,fontWeight:900,color:lin2.color}}>{h.lineaNombre} . {h.fecha}</div>
+                      <div style={{fontSize:13,fontWeight:700,color:"#4a7a54",marginTop:2}}>{h.totalLotes} lotes . {h.totalRejas} rejas . Cierre: {h.horaCierre}</div>
+                    </div>
+                    <div style={{fontSize:14,fontWeight:700,color:"#4a7a54"}}>{isOpen?"Ocultar":"Ver detalle"}</div>
+                  </div>
+                  {isOpen&&(
+                    <div style={{borderTop:"2px solid rgba(255,255,255,0.06)",padding:"14px 22px"}}>
+                      {(h.lotes||[]).map(function(l,j){
+                        return (
+                          <div key={j} style={{background:"rgba(0,0,0,0.25)",borderRadius:9,padding:"10px 14px",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <div>
+                              <div style={{fontSize:14,fontWeight:700,color:lin2.color}}>{l.rancho} - Malla {l.malla}</div>
+                              <div style={{fontSize:12,color:"#4a7a54",marginTop:2}}>Llegada: {l.hora}{l.chofer?" . "+l.chofer:""}{l.notas?" . "+l.notas:""}</div>
+                            </div>
+                            <div style={{textAlign:"right"}}>
+                              <div style={{fontSize:24,fontWeight:900,color:"#f0f0e8",fontFamily:"Georgia,serif"}}>{l.cajas}</div>
+                              <div style={{fontSize:10,color:"#4a7a54"}}>rejas</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          }
+          {hist.length>0&&(
+            <button onClick={function(){pinReq(function(){setHist([]);fbSet(HIST_KEY,[]);});}}
+              style={{marginTop:10,padding:"10px 22px",background:"transparent",border:"2px solid rgba(248,113,113,0.2)",borderRadius:9,fontSize:13,fontWeight:800,color:"#6b7280",cursor:"pointer",fontFamily:"system-ui"}}>
+              Borrar historial
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ===== ACUMULADO ===== */}
+      {tab==="acum"&&(
+        <div>
+          {!auth
+            ? (
+              <div style={{textAlign:"center",padding:80}}>
+                <div style={{fontSize:18,fontWeight:700,color:"#374151",marginBottom:20}}>Esta seccion requiere PIN de editor</div>
+                <button onClick={function(){setShowPin(true);setPinCb(null);}}
+                  style={{padding:"14px 32px",background:"linear-gradient(135deg,#16a34a,#22c55e)",border:"none",borderRadius:12,color:"#052e16",fontSize:16,fontWeight:900,cursor:"pointer",fontFamily:"system-ui"}}>
+                  Ingresar PIN
+                </button>
+              </div>
+            )
+            : (
+              <div>
+                <div style={{background:"rgba(255,255,255,0.03)",border:"2px solid rgba(255,255,255,0.07)",borderRadius:11,padding:"13px 18px",marginBottom:16,display:"flex",gap:12,alignItems:"end",flexWrap:"wrap"}}>
+                  <div style={{fontSize:12,fontWeight:900,color:"#4ade80",alignSelf:"center"}}>FILTRAR:</div>
+                  <div style={{flex:1,minWidth:130}}>
+                    <label style={LBL}>Rancho</label>
+                    <select style={INP} value={fAcumRancho} onChange={function(e){setFAcumRancho(e.target.value);}}>
+                      <option value="">Todos</option>
+                      {RANCHOS.map(function(r){return <option key={r}>{r}</option>;})}
+                    </select>
+                  </div>
+                  <div style={{flex:1,minWidth:130}}>
+                    <label style={LBL}>Cultivo</label>
+                    <select style={INP} value={fAcumLinea} onChange={function(e){setFAcumLinea(e.target.value);}}>
+                      <option value="">Todos</option>
+                      {LINEAS.map(function(l){return <option key={l.id} value={l.nombre}>{l.nombre}</option>;})}
+                    </select>
+                  </div>
+                  <button onClick={function(){setFAcumRancho("");setFAcumLinea("");}} style={{padding:"9px 16px",background:"rgba(255,255,255,0.06)",border:"2px solid rgba(255,255,255,0.1)",borderRadius:9,color:"#6b7280",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"system-ui",alignSelf:"end"}}>Limpiar</button>
+                </div>
+
+                {/* Boton importar - siempre visible con PIN */}
+                <div style={{background:"rgba(34,197,94,0.06)",border:"2px solid rgba(34,197,94,0.2)",borderRadius:10,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                  <div>
+                    <div style={{fontSize:14,fontWeight:800,color:"#4ade80"}}>Importar historial al acumulado</div>
+                    <div style={{fontSize:12,color:"#4a7a54",marginTop:3}}>{hist.length} dias en historial disponibles para importar</div>
+                  </div>
+                  <button onClick={function(){pinReq(function(){
+                    var nuevoAcum={};
+                    hist.forEach(function(h){
+                      (h.lotes||[]).forEach(function(l){
+                        if(!l.rancho||!l.malla)return;
+                        var key=l.rancho+"|"+h.lineaNombre+"|"+l.malla;
+                        var prev=nuevoAcum[key]||{rancho:l.rancho,linea:h.lineaNombre,malla:l.malla,totalRejas:0,totalViajes:0,primerCorte:"",ultimoCorte:""};
+                        prev.totalRejas+=(l.cajas||0);
+                        prev.totalViajes+=1;
+                        if(!prev.primerCorte||h.fecha<prev.primerCorte)prev.primerCorte=h.fecha;
+                        if(!prev.ultimoCorte||h.fecha>prev.ultimoCorte)prev.ultimoCorte=h.fecha;
+                        nuevoAcum[key]=prev;
+                      });
+                    });
+                    setAcum(nuevoAcum);fbSet(ACUM_KEY,nuevoAcum);
+                  });}}
+                    style={{padding:"10px 22px",background:"linear-gradient(135deg,#16a34a,#22c55e)",border:"none",borderRadius:9,color:"#052e16",fontSize:14,fontWeight:900,cursor:"pointer",fontFamily:"system-ui",whiteSpace:"nowrap"}}>
+                    Importar ahora
+                  </button>
+                </div>
+
+                {Object.keys(acum).length===0&&hist.length===0&&(
+                  <div style={{textAlign:"center",padding:80,color:"#374151",fontSize:18,fontWeight:700}}>El acumulado aparece al cerrar el primer dia</div>
+                )}
+
+                {Object.keys(acum).length>0&&(function(){
+                    var hoy=new Date(); hoy.setHours(0,0,0,0);
+                    var filtradas=Object.values(acum).filter(function(f){
+                      if(fAcumRancho&&f.rancho!==fAcumRancho)return false;
+                      if(fAcumLinea&&f.linea!==fAcumLinea)return false;
+                      return true;
+                    }).sort(function(a,b){
+                      if(a.rancho!==b.rancho)return a.rancho.localeCompare(b.rancho);
+                      if(a.linea!==b.linea)return a.linea.localeCompare(b.linea);
+                      return String(a.malla).localeCompare(String(b.malla));
+                    });
+                    if(!filtradas.length)return <div style={{textAlign:"center",padding:40,color:"#374151",fontSize:16}}>Sin resultados</div>;
+                    return (
+                      <div>
+                        {filtradas.map(function(f,fi){
+                          var lin2=LINEAS.find(function(l){return l.nombre===f.linea;})||{color:"#4ade80"};
+                          // Calcular dias sin corte
+                          var partes=f.ultimoCorte?f.ultimoCorte.split("/"):null;
+                          var diasSinCorte=0;
+                          if(partes&&partes.length===3){
+                            var ult=new Date(parseInt(partes[2]),parseInt(partes[1])-1,parseInt(partes[0]));
+                            diasSinCorte=Math.floor((hoy-ult)/86400000);
+                          }
+                          var sinActividad=diasSinCorte>=4;
+                          return (
+                            <div key={fi} style={{background:"rgba(255,255,255,0.04)",border:"2px solid "+(sinActividad?"rgba(248,113,113,0.35)":"rgba(255,255,255,0.08)"),borderRadius:12,padding:"16px 22px",marginBottom:10}}>
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+                                <div>
+                                  <div style={{fontSize:17,fontWeight:900,color:lin2.color}}>{f.rancho} - {f.linea} - Malla {f.malla}</div>
+                                  <div style={{fontSize:12,fontWeight:700,color:"#4a7a54",marginTop:3}}>
+                                    Primer corte: {f.primerCorte} . Ultimo: {f.ultimoCorte} . {f.totalViajes} viaje{f.totalViajes!==1?"s":""}
+                                  </div>
+                                </div>
+                                <div style={{textAlign:"center",background:"rgba(0,0,0,0.3)",borderRadius:10,padding:"10px 22px"}}>
+                                  <div style={{fontSize:38,fontWeight:900,color:"#f0f0e8",fontFamily:"Georgia,serif",lineHeight:1}}>{f.totalRejas}</div>
+                                  <div style={{fontSize:11,fontWeight:700,color:"#4a7a54"}}>REJAS TOTALES</div>
+                                </div>
+                              </div>
+                              {sinActividad&&(
+                                <div style={{marginTop:12,background:"rgba(248,113,113,0.1)",border:"2px solid rgba(248,113,113,0.3)",borderRadius:9,padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                                  <div style={{fontSize:13,fontWeight:800,color:"#f87171"}}>{diasSinCorte} dias sin corte - fue este el ultimo dia de la malla?</div>
+                                  <button onClick={function(){pinReq(function(){
+                                    var nuevoAcum=Object.assign({},acum);
+                                    var key=f.rancho+"|"+f.linea+"|"+f.malla;
+                                    nuevoAcum[key]=Object.assign({},f,{cerrada:true,fechaCierre:new Date().toLocaleDateString("es-MX")});
+                                    setAcum(nuevoAcum);fbSet(ACUM_KEY,nuevoAcum);
+                                  });}}
+                                    style={{padding:"7px 16px",background:"rgba(248,113,113,0.15)",border:"2px solid rgba(248,113,113,0.4)",borderRadius:8,color:"#f87171",fontSize:13,fontWeight:900,cursor:"pointer",fontFamily:"system-ui",whiteSpace:"nowrap"}}>
+                                    Si, cerrar malla
+                                  </button>
+                                </div>
+                              )}
+                              {f.cerrada&&(
+                                <div style={{marginTop:10,background:"rgba(74,222,128,0.08)",border:"1px solid rgba(74,222,128,0.2)",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,color:"#4ade80"}}>
+                                  Malla cerrada el {f.fechaCierre}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()
+                }
+                {Object.keys(acum).length>0&&(
+                  <button onClick={function(){pinReq(function(){setAcum({});fbSet(ACUM_KEY,{});});}}
+                    style={{marginTop:10,padding:"10px 22px",background:"transparent",border:"2px solid rgba(248,113,113,0.2)",borderRadius:9,fontSize:13,fontWeight:800,color:"#6b7280",cursor:"pointer",fontFamily:"system-ui"}}>
+                    Borrar acumulado
+                  </button>
+                )}
+              </div>
+            )
+          }
+        </div>
+      )}
+
+      </div>
+
+      {/* Modal confirmar cerrar dia */}
+      {confirmCerrar&&(
+        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:"#0a1a0a",border:"2px solid rgba(248,113,113,0.4)",borderRadius:16,padding:"28px",maxWidth:340,width:"100%",textAlign:"center"}}>
+            <div style={{fontSize:16,fontWeight:900,color:"#f0f0e8",marginBottom:8}}>
+              Cerrar dia - {(LINEAS.find(function(l){return l.id===confirmCerrar;})||{nombre:""}).nombre}
+            </div>
+            <div style={{fontSize:13,color:"#6b7280",marginBottom:20}}>Los lotes se guardan en el historial y el acumulado se actualiza. Los contadores regresan a cero.</div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={function(){setConfirmCerrar(null);}}
+                style={{flex:1,padding:"12px",background:"rgba(255,255,255,0.05)",border:"2px solid rgba(255,255,255,0.1)",borderRadius:9,color:"#6b7280",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"system-ui"}}>
+                Cancelar
+              </button>
+              <button onClick={function(){pinReq(function(){cerrarDia(confirmCerrar);});}}
+                style={{flex:1,padding:"12px",background:"rgba(248,113,113,0.15)",border:"2px solid rgba(248,113,113,0.4)",borderRadius:9,color:"#f87171",fontSize:14,fontWeight:900,cursor:"pointer",fontFamily:"system-ui"}}>
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPin&&<ModalPin onOk={function(){pinOk();}} onCancel={function(){setShowPin(false);setPinCb(null);}}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
